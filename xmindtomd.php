@@ -1,8 +1,5 @@
 <?php
 
-// TEST
-// php xmindtomd.php -f "../../Documents/Maps/Temps et Empathie - JASFFG41.xmind" -d -l3 -o"/Users/eric/Sites/farm/books/data/pages/fr/medical/in_progress/jasfgg41_2.txt"
-
 /**
  * PHP command line script
  * XMind file exporter to Dokuwiki and Markdown syntax
@@ -25,6 +22,8 @@ class XMindToMD {
     private $lastH1 = "";
     private $lastH2 = "";
     private $output = "";
+    private $extraRefs = Array();  // Read refs from a specific page
+    private $manualRefs = Array();  // Extracted refs from map [(...>...)]
 
     // Reveal JS var
     private $rjs = Array(  
@@ -208,6 +207,11 @@ class XMindToMD {
      * \note Recursive function
      */
     private function readNode($node, $level = 0) {
+      // Don't read extrapage, only reference nodes
+      if ($this->_isExtraPage($node) ||
+          $this->_isOnlyReference($node)) {
+        return true;
+      }
       if ($this->_isRevealNode($node)) {
         $this->_readRevealNode($node, $level);
         return true;
@@ -322,95 +326,154 @@ class XMindToMD {
      * Extra code for pubmed2020 plugin and refnotes
      */
     public function createPubmedRefNotes() {
+        echo "* Preparing REFNOTES".PHP_EOL;
+        $includeRefs = false; // No references to add if false
+
         // Get RefNotes params
-        $params  = "<refnotes>".PHP_EOL;
-        $params .= "  refnote-id       : 1".PHP_EOL;
-        $params .= "  reference-base   : text".PHP_EOL;
-        $params .= "  reference-font-weight : normal".PHP_EOL;
-        $params .= "  reference-font-style : normal".PHP_EOL;
-        $params .= "  reference-format : []".PHP_EOL;
-        $params .= "  reference-group  : ,".PHP_EOL;
-        $params .= "  reference-render : basic".PHP_EOL;
-        $params .= "  multi-ref-id : note".PHP_EOL;
-        $params .= "  note-preview : popup".PHP_EOL;
-        $params .= "  notes-separator : none".PHP_EOL;
-        $params .= "  note-text-align : left".PHP_EOL;
-        $params .= "  note-font-size : normal".PHP_EOL;
-        $params .= "  note-render : basic".PHP_EOL;
-        $params .= "  note-id-base : text".PHP_EOL;
-        $params .= "  note-id-font-weight : normal".PHP_EOL;
-        $params .= "  note-id-font-style : normal".PHP_EOL;
-        $params .= "  note-id-format : .".PHP_EOL;
-        $params .= "  back-ref-caret : none".PHP_EOL;
-        $params .= "  back-ref-base : text".PHP_EOL;
-        $params .= "  back-ref-font-weight : bold".PHP_EOL;
-        $params .= "  back-ref-font-style : normal".PHP_EOL;
-        $params .= "  back-ref-format : none".PHP_EOL;
-        $params .= "  back-ref-separator : ,".PHP_EOL;
-        $params .= "  scoping : single".PHP_EOL;
-        $params .= "</refnotes>".PHP_EOL.PHP_EOL.PHP_EOL;
-        $params .= "{{pmid>doc_format:long}}".PHP_EOL.PHP_EOL.PHP_EOL;
+        $refs  = "<refnotes>".PHP_EOL;
+        $refs .= "  refnote-id       : 1".PHP_EOL;
+        $refs .= "  reference-base   : text".PHP_EOL;
+        $refs .= "  reference-font-weight : normal".PHP_EOL;
+        $refs .= "  reference-font-style : normal".PHP_EOL;
+        $refs .= "  reference-format : []".PHP_EOL;
+        $refs .= "  reference-group  : ,".PHP_EOL;
+        $refs .= "  reference-render : basic".PHP_EOL;
+        $refs .= "  multi-ref-id : note".PHP_EOL;
+        $refs .= "  note-preview : popup".PHP_EOL;
+        $refs .= "  notes-separator : none".PHP_EOL;
+        $refs .= "  note-text-align : left".PHP_EOL;
+        $refs .= "  note-font-size : normal".PHP_EOL;
+        $refs .= "  note-render : basic".PHP_EOL;
+        $refs .= "  note-id-base : text".PHP_EOL;
+        $refs .= "  note-id-font-weight : normal".PHP_EOL;
+        $refs .= "  note-id-font-style : normal".PHP_EOL;
+        $refs .= "  note-id-format : .".PHP_EOL;
+        $refs .= "  back-ref-caret : none".PHP_EOL;
+        $refs .= "  back-ref-base : text".PHP_EOL;
+        $refs .= "  back-ref-font-weight : bold".PHP_EOL;
+        $refs .= "  back-ref-font-style : normal".PHP_EOL;
+        $refs .= "  back-ref-format : none".PHP_EOL;
+        $refs .= "  back-ref-separator : ,".PHP_EOL;
+        $refs .= "  scoping : single".PHP_EOL;
+        $refs .= "</refnotes>".PHP_EOL.PHP_EOL;
+        $refs .= "{{pmid>doc_format:long}}".PHP_EOL.PHP_EOL;
 
-        // Pattern to search for references
+        // Include reference pages "{{refs>...}}" in xmind file
+        if (count($this->extraRefs)) {
+          $includeRefs = true;
+          echo "    * Found ".count($this->extraRefs)." references' page(s)".PHP_EOL;
+          foreach($this->extraRefs as $page) {
+            if (strpos($page, "&nofooter&link") === false) {
+              $page = str_replace("}}", "&nofooter&link}}", $page);
+            }
+            $refs .= str_replace("{{refs>", "{{page>", $page).PHP_EOL;
+          }
+          $refs .= PHP_EOL.PHP_EOL;
+        } 
+
+        // Search for references PMID references (noted [(P12345678)] in xmind file)
         $pattern = "/\[\(P(\d+)\)\]/";
-
-        // Add all PMIDs references to dokuwiki/markdown output
-        if (preg_match_all($pattern, $this->output, $matches, PREG_PATTERN_ORDER)) {
-          echo "* Preparing REFNOTES with PubMed PMID: ".count($matches[1])." reference(s) found".PHP_EOL;
-          
+        if (preg_match_all($pattern, $this->output.$this->rjs["output"], $matches, PREG_PATTERN_ORDER)) {
+          $includeRefs = true;
           // Get all PMIDs references
           $pmids = array_unique($matches[1]);
           sort($pmids, SORT_NUMERIC);
+          echo "    * Found ".count($pmids)." Unique PubMed PMID reference(s)".PHP_EOL;          
           // Add to raw output
+          foreach($pmids as $k => $pmid) {
+            $refs .= "[(P".trim($pmid).">{{pmid>".trim($pmid)."}})]".PHP_EOL;
+          }
+          $refs .= PHP_EOL.PHP_EOL;
+        }
+
+
+        // Add $this->manualRefs
+        if (count($this->manualRefs)) {
+          $includeRefs = true;
+          echo "    * Found ".count($this->manualRefs)." Unique manual node reference(s)".PHP_EOL;          
+          foreach($this->manualRefs as $r) {
+            $refs .= $r.PHP_EOL;
+            // Search for manual references (noted [(nameOfRef>Value Of the ref. https://link.lk.)])
+//            $contents = file_get_contents($fn);
+//            $pattern = "/(\[\([^>]+\>.*\)\])/";
+//            if (preg_match_all($pattern, $this->output.$this->rjs["output"], $matches, PREG_PATTERN_ORDER)) {
+//              $includeRefs = true;
+//              // Include these references
+//              $r = array_unique($matches[1]);
+//              sort($r, SORT_STRING);
+//              echo "    * Found ".count($r)." Unique manual reference(s) in text".PHP_EOL;          
+//              // Add to raw output
+//              foreach($r as $ref) {
+//                $refs .= $ref.PHP_EOL;
+//              }
+//            }
+          }
+        }
+
+
+        // Add references to outputs (raw and RevealJS)
+        if ($includeRefs == true) {
+          // Add to raw
+          echo "    * Add references to dokuwiki/markdown output".PHP_EOL;          
           $this->output .= PHP_EOL.PHP_EOL.PHP_EOL."===== Références =====".PHP_EOL.PHP_EOL.PHP_EOL;
-          $this->output .= PHP_EOL.PHP_EOL.$params;
-          foreach($pmids as $k => $pmid) {
-            $this->output .= "[(P".trim($pmid).">{{pmid>".trim($pmid)."}})]".PHP_EOL;
-          }
+          $this->output .= $refs.PHP_EOL;
           $this->output .= PHP_EOL.PHP_EOL."~~REFNOTES~~".PHP_EOL.PHP_EOL;
-        }
-    
-        // Add all PMIDs references to RevealJS output
-        if (preg_match_all($pattern, $this->rjs["output"], $matches, PREG_PATTERN_ORDER)) {
-          echo "* Preparing REFNOTES with PubMed PMID (RevealJS): ".count($matches[1])." reference(s) found".PHP_EOL;
           
-          // Get all PMIDs references
-          $pmids = array_unique($matches[1]);
-          sort($pmids, SORT_NUMERIC);
-          $n = intdiv(count($pmids), 4) + 1;
+          // Add to RevealJS
+          if (!empty($this->rjs["output"])) {
+            // Count number of reference used in the slides output
+            $n = 0;
+            $pattern = "/\[\([^\)^>]*\)\]/";
+            if (preg_match_all($pattern, $this->rjs["output"], $matches)) {
+              $n = count($matches[0]);
+              $a = Array();
+              foreach($matches[0] as $aref) {
+                if (in_array($aref, $a))
+                  continue;
+                array_push($a, $aref);
+              }
+              $n = count($a);
+            }
+            echo "    * Add references to RevealJS output? Number used: ".$n.PHP_EOL;
 
-          // Add this part to the map
-          $this->rjs["map"] .= "  * Références bibliographiques".PHP_EOL;
-          $this->rjs["output"] .= $this->rjs["mapTag"];
+            // If we have refs to add
+            if ($n > 0) {
+              // Four refs by references slides
+              $nSlides = intdiv($n, 4);
+              if (($n % 4) > 0)  $nSlides++;
 
-          // Create references slides
-          $this->rjs["output"] .= "---- eric :1px.png bg-none none ---->".PHP_EOL;
-          $this->rjs["output"] .= PHP_EOL;
-          $this->rjs["output"] .= $this->beforeH2;
-          $this->rjs["output"] .= "Références bibliographiques";
-          $this->rjs["output"] .= $this->afterH2.PHP_EOL.PHP_EOL;
-          $this->rjs["output"] .= "  * Nombre de références : ".count($pmids).PHP_EOL.PHP_EOL;
-          $this->rjs["output"] .= "  * Nombre de slides : ".$n.PHP_EOL.PHP_EOL;
-          $this->rjs["output"] .= "<----".PHP_EOL.PHP_EOL;
+              // Add this part to the map
+              $this->rjs["map"] .= "  * Références bibliographiques".PHP_EOL;
+              $this->rjs["output"] .= $this->rjs["mapTag"].PHP_EOL.PHP_EOL;
 
-          // Add to RevealJS output
-          $this->rjs["output"] .= PHP_EOL.PHP_EOL.$params;
-          foreach($pmids as $k => $pmid) {
-            $this->rjs["output"] .= "[(P".trim($pmid).">{{pmid>".trim($pmid)."}})]".PHP_EOL;
+              // Create references slides
+              $this->rjs["output"] .= "---- eric :1px.png bg-none none ---->".PHP_EOL;
+              $this->rjs["output"] .= PHP_EOL;
+              $this->rjs["output"] .= $this->beforeH2;
+              $this->rjs["output"] .= "Références bibliographiques";
+              $this->rjs["output"] .= $this->afterH2.PHP_EOL.PHP_EOL;
+              $this->rjs["output"] .= "  * Nombre de références : ".$n.PHP_EOL.PHP_EOL;
+              $this->rjs["output"] .= "  * Nombre de slides : ".$nSlides.PHP_EOL.PHP_EOL; 
+
+              // Add to RevealJS output
+              $this->rjs["output"] .= PHP_EOL.PHP_EOL.$refs.PHP_EOL;
+              $this->rjs["output"] .= "<----".PHP_EOL.PHP_EOL; 
+
+              for($i=0; $i < $nSlides; $i++) {
+                $this->rjs["output"] .= PHP_EOL.PHP_EOL.PHP_EOL;
+                $this->rjs["output"] .= "---- eric :1px.png bg-none none ---->".PHP_EOL;
+                $this->rjs["output"] .= PHP_EOL;
+                $this->rjs["output"] .= $this->beforeH3;
+                $this->rjs["output"] .= "Références ".($i+1)." / ".$nSlides;
+                $this->rjs["output"] .= $this->afterH3.PHP_EOL.PHP_EOL;
+                $this->rjs["output"] .= "<WRAP references>~~REFNOTES 4~~</WRAP>".PHP_EOL;
+                $this->rjs["output"] .= "<----".PHP_EOL.PHP_EOL;
+              }
+              $this->rjs["output"] .= PHP_EOL.PHP_EOL.PHP_EOL;
+            }
           }
+        }        
 
-          for($i=0; $i < $n; $i++) {
-            $this->rjs["output"] .= PHP_EOL.PHP_EOL.PHP_EOL;
-            $this->rjs["output"] .= "---- eric :1px.png bg-none none ---->".PHP_EOL;
-            $this->rjs["output"] .= PHP_EOL;
-            $this->rjs["output"] .= $this->beforeH3;
-            $this->rjs["output"] .= "Références ".($i+1)." / ".$n;
-            $this->rjs["output"] .= $this->afterH3.PHP_EOL.PHP_EOL;
-            $this->rjs["output"] .= "<WRAP llo>~~REFNOTES 4~~</WRAP>".PHP_EOL;
-            $this->rjs["output"] .= "<----".PHP_EOL.PHP_EOL;
-          }
-          $this->rjs["output"] .= PHP_EOL.PHP_EOL.PHP_EOL;
-        }
     }
     
     /**
@@ -463,6 +526,35 @@ class XMindToMD {
       return $outputFn;
     }
 
+    /**
+     * Add a dokuwiki page {{page>....}}
+     */
+    private function _isExtraPage($node) {
+      if (strtolower(substr($node->title, 0, 7) === "{{page>")) {
+          // TODO: problem here (inclure à l'intérieur d'un slide si ce sont les réfs)
+          //echo print_r($node);
+          $this->output .= $node->title.PHP_EOL;
+          $this->rjs["output"] .= PHP_EOL.$node->title.PHP_EOL;
+          return true;
+       } else if (strtolower(substr($node->title, 0, 7) === "{{refs>")) {
+          array_push($this->extraRefs, $node->title);
+          return true;
+       }
+       return false;
+    }
+
+    /**
+     * Add a dokuwiki page {{page>....}}
+     */
+    private function _isOnlyReference($node) {
+        $pattern = "/^\[\([^>]+\>.*\)\]$/m";
+        if (preg_match($pattern, $node->title, $matches)) {
+          array_push($this->manualRefs, $node->title);
+          return true;
+        }
+        return false;
+    }
+
     /*******************************
      * RevealJS specific functions *
      *******************************/
@@ -482,6 +574,11 @@ class XMindToMD {
     }
 
     private function _readRevealNode($node, $level = 0) {
+      // Don't read extrapage, only reference nodes
+      if ($this->_isExtraPage($node) ||
+          $this->_isOnlyReference($node)) {
+        return true;
+      }
       // If _isRevealNode
       if ($this->_isRevealNode($node)) {
         // Here $node is pointing to the RJS root node not the content of the slide
@@ -526,6 +623,7 @@ class XMindToMD {
             // Read slide options
             //     no-footer
             //     no-title
+            //     start_map_here
             // Get values (first child)
             if (property_exists($node, "children") &&
               property_exists($node->children, "attached")) {
@@ -543,6 +641,9 @@ class XMindToMD {
                     $rep     = "\\1 \\3";
                     $this->rjs["currentSlide"] = preg_replace($pattern, $rep, 
                                                               $this->rjs["currentSlide"], 1);
+                    break;
+                  case "start_map_here":
+                    $this->rjs["currentSlide"] = $this->rjs["maptag"].PHP_EOL.$this->rjs["currentSlide"];
                     break;
                 }
                 $this->rjs["currentSlideEmpty"] = false;
@@ -696,7 +797,8 @@ class XMindToMD {
     private function _getPresentationMap() {
       if (empty($this->rjs["map"]))
         return "";
-      $s  = "---- eric fr:medical:cours:dugp_memoires:sitemap_rouge.svg ";
+      $s  = PHP_EOL.PHP_EOL;
+      $s .= "---- eric fr:medical:cours:dugp_memoires:sitemap_rouge.svg ";
       $s .= "20% contain center right 35% bg-none none ---->".PHP_EOL;
       $s .= "===== Plan de la présentation =====".PHP_EOL.PHP_EOL;
       $s .= "<WRAP dugp_plan>".PHP_EOL;
@@ -787,4 +889,3 @@ $xmd->saveOutput();
 exit(0);
 
 ?>
-
