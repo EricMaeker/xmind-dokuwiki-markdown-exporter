@@ -594,6 +594,7 @@ class XMindToMD {
         $this->rjs["currentSlide"] .= $this->afterH2;
         $this->rjs["currentSlide"] .= PHP_EOL.PHP_EOL.PHP_EOL;
         $this->rjs["currentSlideEmpty"] = true;
+        $this->rjs["currentSlideNotes"] = "";
         $level = 0;
       } else {
 
@@ -615,6 +616,18 @@ class XMindToMD {
               property_exists($node->children, "attached")) {
               $bg = $node->children->attached[0]->title;
               $this->rjs["currentSlide"] = str_replace(":1px.png", $bg, $this->rjs["currentSlide"]);
+              $this->rjs["currentSlideEmpty"] = false;
+              return true;
+            }
+          } else if ($node->title === "notes" || $node->title === "note") {
+            // Slide Notes
+            if (property_exists($node, "children") &&
+              property_exists($node->children, "attached")) {
+              // Read all children
+              foreach($node->children->attached as $noteNode) {
+                if (property_exists($noteNode, "title"))
+                  $this->rjs["currentSlideNotes"] .= "  * ".$noteNode->title.PHP_EOL;
+              }
               $this->rjs["currentSlideEmpty"] = false;
               return true;
             }
@@ -731,11 +744,21 @@ class XMindToMD {
             $this->rjs["output"] .= $this->rjs["mapTag"];
             $this->rjs["map"] .= "  * ".$this->lastH2.PHP_EOL;
           }
+          // Add slide contents
           $this->rjs["output"] .= $this->rjs["currentSlide"];
+          // Add notes
+          if (!empty($this->rjs["currentSlideNotes"])) {
+            $this->rjs["output"] .= PHP_EOL.PHP_EOL.PHP_EOL;
+            $this->rjs["output"] .= "<notes>".PHP_EOL;
+            $this->rjs["output"] .= $this->rjs["currentSlideNotes"].PHP_EOL;
+            $this->rjs["output"] .= "</notes>".PHP_EOL;
+          }
+          // Close slide
           $this->rjs["output"] .= $this->_getSlideAfter().PHP_EOL;
         }
         // Reset vars
         $this->rjs["currentSlide"] = "";
+        $this->rjs["currentSlideNotes"] = "";
         $this->rjs["currentSlideEmpty"] = true;
       }
     }
