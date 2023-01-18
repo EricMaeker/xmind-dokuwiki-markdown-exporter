@@ -1,5 +1,8 @@
 <?php
 
+// TEST
+// php xmindtomd.php -f "../../Documents/Maps/Temps et Empathie - JASFFG41.xmind" -d -l3 -o"/Users/eric/Sites/farm/books/data/pages/fr/medical/in_progress/jasfgg41_2.txt"
+
 /**
  * PHP command line script
  * XMind file exporter to Dokuwiki and Markdown syntax
@@ -22,6 +25,7 @@ class XMindToMD {
     private $lastH1 = "";
     private $lastH2 = "";
     private $output = "";
+    private $formatRefs = "long";  // Format for the reference output -> {{format>...}}
     private $extraRefs = Array();  // Read refs from a specific page
     private $manualRefs = Array();  // Extracted refs from map [(...>...)]
 
@@ -34,6 +38,7 @@ class XMindToMD {
          "auteurs",
          "affiliation",
          "date",
+         "citation",
          "footer",
          "style",
          "bandeau",
@@ -46,6 +51,7 @@ class XMindToMD {
       "output" => "",
       "currentSlide" => "",
       "currentSlideEmpty" => true,
+      "currentSlideOpt" => "",  // Some options for the currentSlide
       "map" => "",                 // map of presentation
       "mapTag" => "%%revealjs_map_tag%%",  // Where map will be inserted at the end of the process
 
@@ -70,7 +76,8 @@ class XMindToMD {
     private $afterH3 = "";
     private $beforeH4 = "";
     private $afterH4 = "";
-    private $nheaders = 2; // Number of header levels 
+    private $nheaders = 2;       // Number of header levels 
+    private $onlyBranch = -1;    // Process only one branch
     private $outputExt = ".md";
     private $style = "";
     private $styleLf = "";
@@ -98,7 +105,8 @@ class XMindToMD {
         $shortopts .= "f:";  // input XMind file
         $shortopts .= "s:";  // style
         $shortopts .= "o::"; // output (optional)
-        $shortopts .= "l::"; // output (optional)
+        $shortopts .= "l::"; // level (optional)
+        $shortopts .= "b::"; // one branch only (optional)
         $shortopts .= "hvdm";  // help, version, dokuwiki, markdown
  
         $longopts  = array(
@@ -122,6 +130,7 @@ class XMindToMD {
           echo "    -d   Export to Dokuwiki syntax".PHP_EOL;
           echo "    -m   Export to Markdown syntax".PHP_EOL;
           echo "    -l   Level of headers".PHP_EOL;
+          echo "    -b   Only branch number x".PHP_EOL;
           echo PHP_EOL;
           echo "Written by Eric Maeker, MD, France.".PHP_EOL;
           echo "See: https://github.com/EricMaeker".PHP_EOL;
@@ -148,6 +157,11 @@ class XMindToMD {
         if (array_key_exists("l", $this->options) &&
             !empty($this->options["l"])) {
           $this->nheaders = $this->options["l"];
+        }        
+
+        if (array_key_exists("b", $this->options) &&
+            !empty($this->options["b"])) {
+          $this->onlyBranch = $this->options["b"];
         }        
     }
 
@@ -179,7 +193,7 @@ class XMindToMD {
         }
         
         // Read JSON
-        echo "* Decoding JSON content".PHP_EOL;
+        echo "* Decoding XMind JSON content".PHP_EOL;
         $json = json_decode($contents, false);
 
         // Log debug
@@ -216,10 +230,26 @@ class XMindToMD {
         $this->_readRevealNode($node, $level);
         return true;
       }
-      $withoutLf = str_replace("\n", " / ", $node->title);
+      if ($this->_isTableNode($node)) {
+        $this->_readTableNode($node, $level);
+        return true;
+      }
+
+      // Get some work on node text
+      $title = $node->title;
+      $nheaders_bkup = $this->nheaders;
+
+      // Title contains a mention to nb of levels? {{l\d}}
+      if (preg_match("/.*\{\{l(\d)\}\}/", $title, $matches)) {
+        $this->nheaders = $matches[1];
+        $title = preg_replace("/(.*)\s*\{\{l(\d)\}\}/", "$1", $title);
+      }
+
       // Convert LF to dokuwiki/markdown style
-      $withLf = str_replace("\n", $this->styleLf, $node->title);
+      $withoutLf = str_replace("\n", " / ", $title);
+      $withLf = str_replace("\n", $this->styleLf, $title);
       $indent = $this->_getLineIndent($level, $this->nheaders);
+
       switch ($level) {
         case 0:
           if ($this->nheaders > 0) {
@@ -248,7 +278,7 @@ class XMindToMD {
           if ($this->nheaders > 2) {
             $this->output .= PHP_EOL.PHP_EOL;
             $this->output .= $this->beforeH3;
-            $this->output .= str_replace("\n", " / ", $node->title);
+            $this->output .= str_replace("\n", " / ", $title);
             $this->output .= $this->afterH3;
             $this->output .= PHP_EOL.PHP_EOL;
             $this->lastH3 = $withoutLf;
@@ -256,13 +286,67 @@ class XMindToMD {
           }
         default:
           $this->output .= $indent;
+          // Get style of the node
+          if (property_exists($node, "style")
+            && property_exists($node->style, "properties")) {
+            $arr = get_object_vars($node->style->properties);
+            // Bold?
+            if (array_key_exists("fo:font-weight", $arr) &&
+                !empty($arr["fo:font-weight"])) {
+              if ($arr["fo:font-weight"] === "bold") {
+              $withLf = $this->preBold.$withLf.$this->postBold;
+              }
+            } else             
+            // Italic?
+            if (array_key_exists("fo:font-style", $arr) &&
+                !empty($arr["fo:font-style"])) {
+              if ($arr["fo:font-style"] === "italic") {
+              $withLf = $this->preItalic.$withLf.$this->postItalic;
+              }
+            }
+          }
           $this->output .= $withLf.PHP_EOL;
       }
+
       // Read children
       if (property_exists($node, "children")) {
         foreach($node->children->attached as $child) {
           $this->readNode($child, $level+1);
         }
+      }
+
+      $this->nheaders = $nheaders_bkup;
+
+    }
+
+    /**
+     * Ok
+     * TODO: catch previous node?
+     */
+    private function _isTableNode($node) {
+//       if (!property_exists($node, "structureClass"))
+//         return false;
+//       if (empty($node->structureClass) ||
+//           $node->structureClass !== "org.xmind.ui.spreadsheet.column")
+//         return false;
+      // Use Dokuwiki format to detect table node
+      // Table should start with headings -> ^
+      $test = str_replace(" ", "", $node->title);
+      if (substr($test, 0, 1) === "^" || substr($test, 0, 1) === "|")
+          return true;
+      return false;
+    }
+
+    /**
+     * Add a dokuwiki formatted table in the output document or the revealJS output
+     */
+    private function _readTableNode($node, $level = 0, $isReveal = false) {
+      if (!$this->_isTableNode($node))
+        return false;
+      if ($isReveal) {
+        $this->rjs["currentSlide"] .= PHP_EOL.PHP_EOL.$node->title.PHP_EOL.PHP_EOL;
+      } else {
+        $this->output .= PHP_EOL.PHP_EOL.$node->title.PHP_EOL.PHP_EOL;
       }
     }
 
@@ -356,7 +440,7 @@ class XMindToMD {
         $refs .= "  back-ref-separator : ,".PHP_EOL;
         $refs .= "  scoping : single".PHP_EOL;
         $refs .= "</refnotes>".PHP_EOL.PHP_EOL;
-        $refs .= "{{pmid>doc_format:long}}".PHP_EOL.PHP_EOL;
+        $refs .= "{{pmid>doc_format:".$this->formatRefs."}}".PHP_EOL.PHP_EOL;
 
         // Include reference pages "{{refs>...}}" in xmind file
         if (count($this->extraRefs)) {
@@ -369,7 +453,7 @@ class XMindToMD {
             $refs .= str_replace("{{refs>", "{{page>", $page).PHP_EOL;
           }
           $refs .= PHP_EOL.PHP_EOL;
-        } 
+        }
 
         // Search for references PMID references (noted [(P12345678)] in xmind file)
         $pattern = "/\[\(P(\d+)\)\]/";
@@ -386,6 +470,9 @@ class XMindToMD {
           $refs .= PHP_EOL.PHP_EOL;
         }
 
+//        } else if (preg_match('~{{pmidlist}}~', $node->title, $m)) {
+//           return true;
+//        }
 
         // Add $this->manualRefs
         if (count($this->manualRefs)) {
@@ -539,6 +626,11 @@ class XMindToMD {
        } else if (strtolower(substr($node->title, 0, 7) === "{{refs>")) {
           array_push($this->extraRefs, $node->title);
           return true;
+       } else if (preg_match('~{{format>(.+)}}~', $node->title, $m)) {
+          $this->formatRefs =$m[1];
+          return true;
+//        } else if (preg_match('~{{pmidlist}}~', $node->title, $m)) {
+//           return true;
        }
        return false;
     }
@@ -554,6 +646,14 @@ class XMindToMD {
         }
         return false;
     }
+
+    /**
+     * Find all PMID references in the xmind processed output
+     * Note that the output must be created before calling this function
+     */
+    private function _extractAllPmidReferences() {
+    }
+
 
     /*******************************
      * RevealJS specific functions *
@@ -579,9 +679,27 @@ class XMindToMD {
           $this->_isOnlyReference($node)) {
         return true;
       }
+      // Table node
+      if ($this->_isTableNode($node)) {
+        $this->_readTableNode($node, $level, true);
+        return true;
+      }
       // If _isRevealNode
       if ($this->_isRevealNode($node)) {
         // Here $node is pointing to the RJS root node not the content of the slide
+
+        // Check Major RJS red mark   ±   add to $this->rjs["currentSlideOpt"]
+        if (property_exists($node, "markers")) {
+          if (count($node->markers)) {
+            for($i=0; $i<count($node->markers); $i++) {
+              if (property_exists($node->markers[$i], "markerId") &&
+                  $node->markers[$i]->markerId === "tag-red") {
+                $this->rjs["currentSlideOpt"] = "tag-red";
+              }
+            }
+          }
+        }
+
         // Add last H2 (H1 is the title of the map)
         $this->rjs["currentSlide"] .= PHP_EOL.PHP_EOL.PHP_EOL;
         $this->rjs["currentSlide"] .= $this->_getSlideBefore().PHP_EOL;
@@ -596,6 +714,7 @@ class XMindToMD {
         $this->rjs["currentSlideEmpty"] = true;
         $this->rjs["currentSlideNotes"] = "";
         $level = 0;
+
       } else {
 
         // Check commands : Titre, Auteurs, Affiliation, Années, Footer
@@ -609,61 +728,70 @@ class XMindToMD {
           $this->rjs["currentSlide"] .= PHP_EOL.$this->styleLf.PHP_EOL;
         } else {
           // Is background mention?
-          if ($node->title === "background" || 
-            $node->title === "bg") {
-            // Get values (first child)
-            if (property_exists($node, "children") &&
-              property_exists($node->children, "attached")) {
-              $bg = $node->children->attached[0]->title;
-              $this->rjs["currentSlide"] = str_replace(":1px.png", $bg, $this->rjs["currentSlide"]);
-              $this->rjs["currentSlideEmpty"] = false;
-              return true;
-            }
-          } else if ($node->title === "notes" || $node->title === "note") {
-            // Slide Notes
-            if (property_exists($node, "children") &&
-              property_exists($node->children, "attached")) {
-              // Read all children
-              foreach($node->children->attached as $noteNode) {
-                if (property_exists($noteNode, "title"))
-                  $this->rjs["currentSlideNotes"] .= "  * ".$noteNode->title.PHP_EOL;
+          switch (strtolower($node->title)) {
+            case "background": case "bg":
+              // Get values (first child)
+              if (property_exists($node, "children") &&
+                property_exists($node->children, "attached")) {
+                $bg = $node->children->attached[0]->title;
+                $this->rjs["currentSlide"] = str_replace(":1px.png", $bg, $this->rjs["currentSlide"]);
+                $this->rjs["currentSlideEmpty"] = false;
+                return true;
               }
-              $this->rjs["currentSlideEmpty"] = false;
-              return true;
-            }
-          } else if ($node->title === "option" || 
-            $node->title === "opt") {
-            // Read slide options
-            //     no-footer
-            //     no-title
-            //     start_map_here
-            // Get values (first child)
-            if (property_exists($node, "children") &&
-              property_exists($node->children, "attached")) {
-              foreach($node->children->attached as $o) {
-                $option = $o->title;
-                switch ($option) {
-                  case "no-footer":
-                    // TODO: improve this with regex
-                    $option = " ".$option." ";
-                    $this->rjs["currentSlide"] = str_replace("---- ", "---- ".$option, 
-                                                             $this->rjs["currentSlide"]);
-                    break;
-                  case "no-title":
-                    $pattern = "/^(".$this->beforeH2.")(.*)(".$this->afterH2.")$/m";
-                    $rep     = "\\1 \\3";
-                    $this->rjs["currentSlide"] = preg_replace($pattern, $rep, 
-                                                              $this->rjs["currentSlide"], 1);
-                    break;
-                  case "start_map_here":
-                    $this->rjs["currentSlide"] = $this->rjs["maptag"].PHP_EOL.$this->rjs["currentSlide"];
-                    break;
+              break;
+            case "notes" : case "note" :
+              // Slide Notes
+              if (property_exists($node, "children") &&
+                property_exists($node->children, "attached")) {
+                // Read all children
+                foreach($node->children->attached as $noteNode) {
+                  if (property_exists($noteNode, "title"))
+                    $this->rjs["currentSlideNotes"] .= "  * ".$noteNode->title.PHP_EOL;
                 }
                 $this->rjs["currentSlideEmpty"] = false;
+                return true;
               }
-              return true;
-            }
-          }
+              break;
+            case "option": case "opt":
+              // Read slide options
+              //     no-footer
+              //     no-title
+              //     no-list
+              //     start_map_here
+              // Get values (first child)
+              if (property_exists($node, "children") &&
+                property_exists($node->children, "attached")) {
+                foreach($node->children->attached as $o) {
+                  $option = $o->title;
+                  switch ($option) {
+                    case "no-ul": case "no-li": case "no-list":
+                      $this->rjs["currentSlideOpt"] = "no-list";
+                    break;
+                    case "no-footer":
+                      // TODO: improve this with regex
+                      $option = " ".$option." ";
+                      $this->rjs["currentSlide"] = str_replace("---- ", "---- ".$option, 
+                                                               $this->rjs["currentSlide"]);
+                      break;
+                    case "no-title":
+                      $pattern = "/^(".$this->beforeH2.")(.*)(".$this->afterH2.")$/m";
+                      // $rep     = "\\1 \\3";
+                      $rep     = "";
+                      $this->rjs["currentSlide"] = preg_replace($pattern, $rep, 
+                                                                $this->rjs["currentSlide"], 1);
+                      break;
+                    case "start_map_here":
+                      // Remove all map tag already in output
+                      $this->rjs["output"] = str_replace($this->rjs["mapTag"], "", $this->rjs["output"]);
+                      $this->rjs["map"] = "";
+                     break; 
+                 } 
+                 $this->rjs["currentSlideEmpty"] = false;
+               }
+               return true;
+             }
+             break;
+           }  // End Switch
 
           // Add content as a list. Note: with reveal we only keep one header level
           $indent = $this->_getLineIndent($level, 1);
@@ -713,14 +841,14 @@ class XMindToMD {
             }
           }
           // TODO: Get markers markers [0] markerId 
-          if (property_exists($node, "markers")) {
+          //if (property_exists($node, "markers")) {
             //echo print_r($node->markers);
             // tag-⚫ flag-⚑ star-★ people-☻  -> red orange dark-blue blue dark-purple green grey
             // task-  -> start oct 3oct half 5oct 7oct done
             // arrow- -> left⇐ right⇒ up⇑ down⇓ left-right⇔ up-down⇕ refresh↻
             // c_symbol_quote c_symbol_apostrophe symbol-question
             //$arr = get_object_vars($node->style->properties);
-          }
+          //}
         
           $this->rjs["currentSlide"] .= $indent.$withLf.PHP_EOL;
         }
@@ -745,7 +873,30 @@ class XMindToMD {
             $this->rjs["map"] .= "  * ".$this->lastH2.PHP_EOL;
           }
           // Add slide contents
-          $this->rjs["output"] .= $this->rjs["currentSlide"];
+          $current = $this->rjs["currentSlide"];
+          //  Check for options
+          if (strpos($this->rjs["currentSlideOpt"], "tag-red") !== false) {
+            //echo PHP_EOL.PHP_EOL.$this->rjs["currentSlideOpt"].PHP_EOL.PHP_EOL;
+            // Remove list
+            $pattern = "/\s+\*/";
+            if (preg_match($pattern, $current, $matches, PREG_OFFSET_CAPTURE)) {
+              $current = preg_replace($pattern, "\n\\\\\ ", $current);
+              // Remove the two first \\ char
+              $idx = $matches[0][1]+1;
+              $current = substr($current, 0, $idx).
+                         "\n<WRAP dugp_red_slide>".
+                         substr($current, $idx+3, -1).
+                         "</WRAP>\n";
+            }
+            //echo PHP_EOL.PHP_EOL."****".$current."****".PHP_EOL.PHP_EOL;
+            
+          } else if (strpos($this->rjs["currentSlideOpt"], "no-list") !== false) {
+            $pattern = "/\s+\*/";
+            if (preg_match($pattern, $current, $matches)) {
+              $current = preg_replace($pattern, "\n", $current);
+            }
+          }
+          $this->rjs["output"] .= $current;
           // Add notes
           if (!empty($this->rjs["currentSlideNotes"])) {
             $this->rjs["output"] .= PHP_EOL.PHP_EOL.PHP_EOL;
@@ -760,6 +911,7 @@ class XMindToMD {
         $this->rjs["currentSlide"] = "";
         $this->rjs["currentSlideNotes"] = "";
         $this->rjs["currentSlideEmpty"] = true;
+        $this->rjs["currentSlideOpt"] = "";
       }
     }
 
@@ -840,8 +992,9 @@ class XMindToMD {
         $pattern = "/^".trim($this->beforeH2)."([^-]*).*".trim($this->afterH2)."$/m";
         if (preg_match($pattern, $a[$i], $matches)) {
           $h2 = trim($matches[1]);
+          $h2 = str_replace("/", "&sol;", $h2);
           //echo $h2.PHP_EOL;
-          $a[$i] = preg_replace("/\* ".$h2."/", "* **".$h2."**", $a[$i], 1);
+          $a[$i] = preg_replace("/\* ".$h2."/", "* **-> ".$h2."**", $a[$i], 1);
           $this->rjs["output"] .= "<WRAP dugp_plan>".$a[$i];
         } else {
           $this->rjs["output"] .= "<WRAP dugp_plan>".$a[$i];
@@ -856,31 +1009,60 @@ class XMindToMD {
       // Add document begining
       $final .= $this->rjs["outputStart"];
       // Add footer
-      $final .= sprintf($this->rjs["footerFormat"], $this->rjs["footer"]);
+      if (array_key_exists("footer", $this->rjs) &&
+          !empty($this->rjs["footer"])) {
+        $footer = $this->rjs["footer"];
+      } else {
+        $footer = "";
+      }      
+      $final .= sprintf($this->rjs["footerFormat"], $footer);
       
       // Create first slide
       // Style
-      $s = "---- eric :1px.png bg-none none no-footer ---->".PHP_EOL;
-      $final .= sprintf($s, $this->rjs["style"]);
+      $s = "---- %s :1px.png bg-none none no-footer ---->".PHP_EOL;
+      if (array_key_exists("style", $this->rjs) &&
+          !empty($this->rjs["style"])) {
+        $style = $this->rjs["style"];
+      } else {
+        $style = "eric";
+      }      
+      $final .= sprintf($s, $style);
+
       // Titre
       // titrecourt
       $s = $this->beforeH1."%s".$this->afterH1.PHP_EOL.PHP_EOL;
-      $final .= sprintf($s, $this->rjs["titre"]);
-      // auteurs
-      $s = "<WRAP name_red>%s</WRAP>".PHP_EOL.PHP_EOL;
-      $withLf = str_replace("\n", $this->styleLf, $this->rjs["auteurs"]);
-      $final .= sprintf($s, $withLf);
-      // affiliation
-      $s = "<WRAP name_place>%s</WRAP>".PHP_EOL.PHP_EOL;
-      $withLf = str_replace("\n", $this->styleLf, $this->rjs["affiliation"]);
-      $final .= sprintf($s, $withLf);
-      // date
-      $s = "<WRAP date>%s</WRAP>".PHP_EOL.PHP_EOL;
-      $withLf = str_replace("\n", $this->styleLf, $this->rjs["date"]);
-      $final .= sprintf($s, $withLf);
+      if (array_key_exists("titre", $this->rjs) &&
+          !empty($this->rjs["titre"])) {
+        $title = $this->rjs["titre"];
+      } else {
+        $title = "No title";
+      }      
+      $final .= sprintf($s, $title);
+
+     // Auteurs, affiliation, date, citation
+      $elements = Array(  // Key = wrap style    --   Value = RJS command content
+        "name_red" => "auteurs",
+        "name_place" => "affiliation",
+        "date" => "date",
+        "citation" => "citation",
+      );
+      foreach($elements as $k => $v) {
+        // Nothing to do?
+        if (!array_key_exists($v, $this->rjs) || 
+            empty($this->rjs[$v]))
+            continue;
+        // Add wrap and content
+        $s = "<WRAP ".$k.">%s</WRAP>".PHP_EOL.PHP_EOL;
+        $withLf = str_replace("\n", $this->styleLf, $this->rjs[$v]);
+        $final .= sprintf($s, $withLf);
+      }
+
       // bandeau
-      $s = "<WRAP first_footer>{{ %s?nolink }}</WRAP>".PHP_EOL.PHP_EOL;
-      $final .= sprintf($s, $this->rjs["bandeau"]);
+      if (array_key_exists("bandeau", $this->rjs) &&
+          !empty($this->rjs["bandeau"])) {
+        $s = "<WRAP first_footer>{{ %s?nolink&200 }}</WRAP>".PHP_EOL.PHP_EOL;
+        $final .= sprintf($s, $this->rjs["bandeau"]);
+      }
       //$final .= "<---- ".PHP_EOL;
 
       // Add computed slides
@@ -903,7 +1085,7 @@ class XMindToMD {
 
 /**
  * Basic script 
- * (c) Eric Maeker, MD, France, https://github.com/EricMaeker
+ * (c) Eric Maeker, MD, France, https://github.com/EricMaeker/xmind-dokuwiki-markdown-exporter
  */
 $xmd = new XMindToMD();
 $xmd->runExport();
