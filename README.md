@@ -21,4 +21,4 @@ php xmindtomd.php -f "myfile.xmind" -d -l3 -o"mydwfile.txt"
 ```
 
 # Licence: BSD-3-Clauses
-(c) Eric Maeker, MD, France, 2021-2022
+(c) Eric Maeker, MD, France, 2021-2023
