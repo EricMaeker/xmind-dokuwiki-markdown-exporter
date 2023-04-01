@@ -28,6 +28,7 @@ class XMindToMD {
     private $formatRefs = "long";  // Format for the reference output -> {{format>...}}
     private $extraRefs = Array();  // Read refs from a specific page
     private $manualRefs = Array();  // Extracted refs from map [(...>...)]
+    private $currentOptions = Array();  // Contains options of a branch
 
     // Reveal JS var
     private $rjs = Array(  
@@ -76,6 +77,8 @@ class XMindToMD {
     private $afterH3 = "";
     private $beforeH4 = "";
     private $afterH4 = "";
+    private $beforeH5 = "";
+    private $afterH5 = "";
     private $nheaders = 2;       // Number of header levels 
     private $onlyBranch = -1;    // Process only one branch
     private $outputExt = ".md";
@@ -221,6 +224,8 @@ class XMindToMD {
      * \note Recursive function
      */
     private function readNode($node, $level = 0) {
+      if (!$this->_isNodeToRead($node))
+        return true;
       // Don't read extrapage, only reference nodes
       if ($this->_isExtraPage($node) ||
           $this->_isOnlyReference($node)) {
@@ -233,6 +238,32 @@ class XMindToMD {
       if ($this->_isTableNode($node)) {
         $this->_readTableNode($node, $level);
         return true;
+      }
+      if ($this->_isExtraDokuwikiNode($node)) {
+        // TODO: add this to revealJS reader
+        $this->_readExtraDokuwikiNode($node, $level);
+        return true;
+      }
+      if ($this->_isOptionsNode($node)) {
+        return true;
+      }
+
+      // Manage option "only-tagged" == only process tagged nodes
+      if (in_array("only-tagged", $this->currentOptions)) {
+        if (property_exists($node, "markers") && count($node->markers)) {
+          // Process node
+//           echo PHP_EOL.PHP_EOL."tagg ok ".print_r($node->title).PHP_EOL.PHP_EOL;
+        } else {
+          // Do not process node
+//           echo PHP_EOL.PHP_EOL."read children ok ".print_r($node->title).PHP_EOL.PHP_EOL;
+          // Read children
+          if (property_exists($node, "children")) {
+             foreach($node->children->attached as $child) {
+               $this->readNode($child, $level+1);
+             }
+          }
+          return true;
+        }
       }
 
       // Get some work on node text
@@ -248,7 +279,6 @@ class XMindToMD {
       // Convert LF to dokuwiki/markdown style
       $withoutLf = str_replace("\n", " / ", $title);
       $withLf = str_replace("\n", $this->styleLf, $title);
-      $indent = $this->_getLineIndent($level, $this->nheaders);
 
       switch ($level) {
         case 0:
@@ -284,8 +314,37 @@ class XMindToMD {
             $this->lastH3 = $withoutLf;
             break;
           }
+        case 3:
+          if ($this->nheaders > 3) {
+            $this->output .= PHP_EOL.PHP_EOL;
+            $this->output .= $this->beforeH4;
+            $this->output .= str_replace("\n", " / ", $title);
+            $this->output .= $this->afterH4;
+            $this->output .= PHP_EOL.PHP_EOL;
+            $this->lastH3 = $withoutLf;
+            break;
+          }
+        case 4:
+          if ($this->nheaders > 4) {
+            $this->output .= PHP_EOL.PHP_EOL;
+            $this->output .= $this->beforeH5;
+            $this->output .= str_replace("\n", " / ", $title);
+            $this->output .= $this->afterH5;
+            $this->output .= PHP_EOL.PHP_EOL;
+            $this->lastH3 = $withoutLf;
+            break;
+          }
         default:
+          // Manage indentation / list
+          if (in_array("no-list", $this->currentOptions)) {
+            $indent = $this->styleLf.$this->styleLf;
+          } else {
+            $indent = $this->_getLineIndent($level, $this->nheaders);
+          }
+
+          // Add to general output
           $this->output .= $indent;
+
           // Get style of the node
           if (property_exists($node, "style")
             && property_exists($node->style, "properties")) {
@@ -294,14 +353,14 @@ class XMindToMD {
             if (array_key_exists("fo:font-weight", $arr) &&
                 !empty($arr["fo:font-weight"])) {
               if ($arr["fo:font-weight"] === "bold") {
-              $withLf = $this->preBold.$withLf.$this->postBold;
+                $withLf = $this->preBold.$withLf.$this->postBold;
               }
             } else             
             // Italic?
             if (array_key_exists("fo:font-style", $arr) &&
                 !empty($arr["fo:font-style"])) {
               if ($arr["fo:font-style"] === "italic") {
-              $withLf = $this->preItalic.$withLf.$this->postItalic;
+                $withLf = $this->preItalic.$withLf.$this->postItalic;
               }
             }
           }
@@ -316,7 +375,23 @@ class XMindToMD {
       }
 
       $this->nheaders = $nheaders_bkup;
+      
+//       echo "Removing opt";
+//       unset($this->currentOptions);
+//       $this->currentOptions = array();
+    }
 
+
+     /**
+     * Ok
+     * Return false if node title contains {{-}}
+     */
+   private function _isNodeToRead($node) {
+      $m = array();
+      if (preg_match("/.*\{\{\-\}\}/", $node->title, $m)) {
+        return false;
+      }
+      return true;
     }
 
     /**
@@ -351,6 +426,63 @@ class XMindToMD {
     }
 
     /**
+     * Check if the node is a dokuwiki extra command like
+     * <TEXT <WRAP <wrap <HTML <style ...
+     */
+    private function _isExtraDokuwikiNode($node) {
+      // Check first chars
+      $test = str_replace(" ", "", $node->title);
+      $test = substr($test, 0, 5);
+      $tags = array("<HTML", "<styl", "<wrap", "<WRAP", "<scri", "<TEXT", "<text");
+      return in_array($test, $tags);
+    }
+
+    /**
+     * Add a dokuwiki formatted table in the output document or the revealJS output
+     */
+    private function _readExtraDokuwikiNode($node, $level = 0, $isReveal = false) {
+      if (!$this->_isExtraDokuwikiNode($node))
+        return false;
+      if ($isReveal) {
+        $this->rjs["currentSlide"] .= PHP_EOL.PHP_EOL.$node->title.PHP_EOL.PHP_EOL;
+      } else {
+        $this->output .= PHP_EOL.PHP_EOL.$node->title.PHP_EOL.PHP_EOL;
+      }
+    }
+
+
+    /**
+     * Read options from textual output inside the map. Options are
+     * - only-bold : keep only bold titles
+     * - only-tagged : keep only tagged titles
+     * - no-indent / no-list : everything in the branch will not be extracted as an indent list
+     */
+    private function _isOptionsNode($node) {
+      if (strtolower($node->title) == "opt" 
+          || strtolower($node->title) == "option"
+          || strtolower($node->title) == "options") {
+        // Read children
+        if (property_exists($node, "children")) {
+          foreach($node->children->attached as $child) {
+            switch ($child->title) {
+            case "no-list": case "no-indent":
+              array_push($this->currentOptions, "no-list");
+              break;
+            case "only-bold":
+              array_push($this->currentOptions, "only-bold");
+              break;
+            case "only-tagged":
+              array_push($this->currentOptions, "only-tagged");
+              break;
+            }
+          }
+        }
+        return true;
+      }
+      return false;
+    }
+
+    /**
      * Define the style of export (header style, file extension, line feed, etc.)
      * Use:
      * doku   for dokuwiki
@@ -368,6 +500,8 @@ class XMindToMD {
           $this->afterH3 = " ====";
           $this->beforeH4 = "=== ";
           $this->afterH4 = " ===";
+          $this->beforeH5 = "== ";
+          $this->afterH5 = " ==";
           $this->styleLf = " \\\\ ";
           $this->outputExt = ".txt";
           $this->preBold = "**";
@@ -384,6 +518,8 @@ class XMindToMD {
           $this->afterH3 = "";
           $this->beforeH4 = "#### ";
           $this->afterH4 = "";
+          $this->beforeH5 = "##### ";
+          $this->afterH5 = "";
           $this->styleLf = "\\\n";
           $this->outputExt = ".md";
           $this->preBold = "**";
@@ -393,7 +529,6 @@ class XMindToMD {
           break;
       }
     }
-
 
     /**
      * Return the indentation string to use according to the 
@@ -794,7 +929,10 @@ class XMindToMD {
            }  // End Switch
 
           // Add content as a list. Note: with reveal we only keep one header level
-          $indent = $this->_getLineIndent($level, 1);
+          // Only if text does not start with <TEXT or <WRAP
+          if (substr($node->title, 0, 5) !== "<TEXT" && 
+              substr($node->title, 0, 5) !== "<WRAP")
+              $indent = $this->_getLineIndent($level, 1);
           // Convert LF to dokuwiki/markdown style
           $withLf = str_replace("\n", $this->styleLf, $node->title);
           
@@ -962,6 +1100,9 @@ class XMindToMD {
     private function _readRevealNodeCommand($node, $level) {
       if (!$this->_isRevealNodeCommand($node))
         return true;
+
+      // TODO: Notice: Trying to access array offset on value of type null in /Users/eric/Documents/git/xmindtomd.php on line 965
+
       $this->rjs[strtolower($node->title)] = $node->children->attached[0]->title;
       return true;
     }
@@ -988,9 +1129,20 @@ class XMindToMD {
           $this->rjs["output"] = $a[$i];
           continue;
         }
+
+        // TODO: when user apply "no-title" opt to the slide, script is unable to find h2 title
+
         // Get first title (title is "H2" or "H2 - H3")
         $pattern = "/^".trim($this->beforeH2)."([^-]*).*".trim($this->afterH2)."$/m";
+
+        // echo $i.PHP_EOL;
+        // echo $pattern.PHP_EOL;        
+        // echo $a[$i].PHP_EOL.PHP_EOL.PHP_EOL.PHP_EOL;
+        
         if (preg_match($pattern, $a[$i], $matches)) {
+        
+        // echo print_r($matches[1]);
+        
           $h2 = trim($matches[1]);
           $h2 = str_replace("/", "&sol;", $h2);
           //echo $h2.PHP_EOL;
